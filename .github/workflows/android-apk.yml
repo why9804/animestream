@@ -11,12 +11,12 @@ permissions:
 
 jobs:
   build:
-    name: Build Android APK
+    name: Build AnimeStream Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
-      # 1. Download repository
+      # 1. Checkout GitHub repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -29,7 +29,7 @@ jobs:
           ZIP_FILE="$GITHUB_WORKSPACE/animestream-android-ready.zip"
 
           if [ ! -f "$ZIP_FILE" ]; then
-            echo "ERROR: animestream-android-ready.zip not found"
+            echo "ERROR: Project ZIP not found"
             exit 1
           fi
 
@@ -40,22 +40,11 @@ jobs:
             -type f -name package.json -print -quit)
 
           if [ -z "$PACKAGE" ]; then
-            echo "ERROR: package.json not found in ZIP"
+            echo "ERROR: package.json not found inside ZIP"
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$PACKAGE")
-
-          if [ ! -f "$PROJECT_DIR/android/gradlew" ]; then
-            echo "ERROR: android/gradlew not found"
-            exit 1
-          fi
-
-          if [ ! -f "$PROJECT_DIR/package.json" ]; then
-            echo "ERROR: package.json missing"
-            exit 1
-          fi
-
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
           echo "Project directory: $PROJECT_DIR"
@@ -67,40 +56,46 @@ jobs:
         with:
           node-version: 22
 
-      # 4. Setup Java
-      - name: Setup Java 21
+      # 4. Setup Java 21
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 21
 
-      # 5. Setup Android SDK without interactive license prompt
+      # 5. Setup Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: false
-          log-accepted-android-sdk-licenses: false
-          packages: platform-tools
 
-      # 6. Accept licenses automatically
-      - name: Accept Android SDK licenses
+      # 6. Accept Android SDK licenses
+      - name: Accept SDK licenses
         shell: bash
         run: |
-          set +o pipefail
+          set +e
           yes | sdkmanager --licenses
-          set -o pipefail
+          SDK_STATUS=${PIPESTATUS[1]}
+          set -e
 
-      # 7. Install required Android SDK
+          if [ "$SDK_STATUS" -ne 0 ]; then
+            echo "ERROR: Android SDK license acceptance failed"
+            exit "$SDK_STATUS"
+          fi
+
+      # 7. Install SDK packages
       - name: Install Android SDK 36
         run: |
-          sdkmanager \
+          sdkmanager --install \
             "platforms;android-36" \
             "build-tools;36.0.0" \
             "platform-tools"
 
-      # 8. Install npm dependencies
+      # 8. Install project dependencies
       - name: Install dependencies
+        shell: bash
         run: |
+          set -e
           cd "$PROJECT_DIR"
 
           if [ -f package-lock.json ]; then
@@ -109,40 +104,92 @@ jobs:
             npm install
           fi
 
-      # 9. Build React / Vite application
+      # 9. Check Capacitor and Android dependency
+      - name: Prepare Capacitor Android
+        shell: bash
+        run: |
+          set -e
+          cd "$PROJECT_DIR"
+
+          CORE_VERSION=$(node -e "
+            const p = require('./package.json');
+            console.log(
+              p.dependencies?.['@capacitor/core'] ||
+              p.devDependencies?.['@capacitor/core'] || ''
+            );
+          ")
+
+          if [ -z "$CORE_VERSION" ]; then
+            echo "ERROR: @capacitor/core is missing from package.json"
+            exit 1
+          fi
+
+          CORE_MAJOR=$(echo "$CORE_VERSION" | grep -oE '[0-9]+' | head -1)
+
+          if [ -z "$CORE_MAJOR" ]; then
+            echo "ERROR: Cannot determine Capacitor major version"
+            exit 1
+          fi
+
+          echo "Capacitor core version: $CORE_VERSION"
+
+          if ! node -e "require.resolve('@capacitor/android/package.json')" 2>/dev/null; then
+            echo "Installing matching Capacitor Android package"
+            npm install --no-save "@capacitor/android@$CORE_MAJOR"
+          fi
+
+          if [ ! -f android/gradlew ]; then
+            echo "Android platform missing or incomplete."
+
+            if [ -d android ]; then
+              rm -rf android
+            fi
+
+            npx cap add android
+          fi
+
+          if [ ! -f android/gradlew ]; then
+            echo "ERROR: Android Gradle wrapper was not generated"
+            exit 1
+          fi
+
+          echo "Android platform ready."
+
+      # 10. Build web application
       - name: Build web application
         run: |
           cd "$PROJECT_DIR"
           npm run build
 
-      # 10. Sync Capacitor Android
-      - name: Sync Capacitor
+      # 11. Sync Capacitor
+      - name: Sync Capacitor Android
         run: |
           cd "$PROJECT_DIR"
           npx cap sync android
 
-      # 11. Build APK
-      - name: Build debug APK
+      # 12. Build debug APK
+      - name: Build APK
         run: |
           cd "$PROJECT_DIR/android"
           chmod +x gradlew
           ./gradlew --no-daemon assembleDebug
 
-      # 12. Verify APK
+      # 13. Verify APK
       - name: Verify APK
+        shell: bash
         run: |
           APK="$PROJECT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -s "$APK" ]; then
-            echo "ERROR: APK was not generated"
+            echo "ERROR: APK not generated"
             exit 1
           fi
 
+          echo "APK generated successfully:"
           ls -lh "$APK"
-          file "$APK"
 
-      # 13. Upload APK
-      - name: Upload AnimeStream APK
+      # 14. Upload APK
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: AnimeStream-APK
