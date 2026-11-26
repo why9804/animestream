@@ -36,12 +36,14 @@ jobs:
           set -euo pipefail
 
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+
           if [ ! -d "$SDK_ROOT" ]; then
             echo "ERROR: Android SDK directory not found: $SDK_ROOT"
             exit 1
           fi
 
           SDKMANAGER="$(find -L "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager -perm -u+x 2>/dev/null | sort -V | tail -n 1)"
+
           if [ -z "$SDKMANAGER" ]; then
             echo "ERROR: sdkmanager not found under $SDK_ROOT/cmdline-tools"
             exit 1
@@ -62,13 +64,16 @@ jobs:
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses > /tmp/android-licenses.log 2>&1
           SDK_STATUS=${PIPESTATUS[1]}
           set -e
+
           tail -n 20 /tmp/android-licenses.log
+
           if [ "$SDK_STATUS" -ne 0 ]; then
             echo "ERROR: Android SDK license acceptance failed"
             exit "$SDK_STATUS"
           fi
 
       - name: Install Android SDK 36
+        shell: bash
         run: |
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install \
             "platforms;android-36" \
@@ -79,10 +84,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_FILE="$GITHUB_WORKSPACE/animestream.zip"
+
+          ZIP_FILE="$GITHUB_WORKSPACE/animestream-1.zip"
 
           if [ ! -f "$ZIP_FILE" ]; then
-            echo "ERROR: animestream.zip not found in repository root"
+            echo "ERROR: animestream-1.zip not found in repository root"
             exit 1
           fi
 
@@ -90,20 +96,25 @@ jobs:
           unzip -q -o "$ZIP_FILE" -d "$GITHUB_WORKSPACE/source"
 
           PACKAGE_JSON="$(find "$GITHUB_WORKSPACE/source" -type f -name package.json -print -quit)"
+
           if [ -z "$PACKAGE_JSON" ]; then
             echo "ERROR: package.json not found in the ZIP"
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$PACKAGE_JSON")"
+
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
           echo "Project directory: $PROJECT_DIR"
+
           test -f "$PROJECT_DIR/capacitor.config.ts"
 
       - name: Install project dependencies
         shell: bash
         run: |
+          set -euo pipefail
           cd "$PROJECT_DIR"
+
           if [ -f package-lock.json ]; then
             npm ci
           else
@@ -111,7 +122,9 @@ jobs:
           fi
 
       - name: Build AnimeStream web app
+        shell: bash
         run: |
+          set -euo pipefail
           cd "$PROJECT_DIR"
           npm run build
 
@@ -130,23 +143,36 @@ jobs:
           fi
 
           test -f android/gradlew
+
           npx cap sync android
-          bash scripts/apply-android-branding.sh
+
+          if [ -f scripts/apply-android-branding.sh ]; then
+            bash scripts/apply-android-branding.sh
+          else
+            echo "WARNING: Android branding script not found; using default Android branding."
+          fi
 
       - name: Build debug APK
+        shell: bash
         run: |
+          set -euo pipefail
           cd "$PROJECT_DIR/android"
+
           chmod +x gradlew
           ./gradlew --no-daemon assembleDebug
 
       - name: Verify APK
         shell: bash
         run: |
+          set -euo pipefail
+
           APK="$PROJECT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
+
           if [ ! -s "$APK" ]; then
             echo "ERROR: app-debug.apk was not generated"
             exit 1
           fi
+
           ls -lh "$APK"
 
       - name: Upload AnimeStream APK
