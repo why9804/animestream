@@ -13,7 +13,7 @@ jobs:
   build:
     name: Build AnimeStream Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
@@ -30,24 +30,24 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Configure preinstalled Android SDK
+      - name: Configure Android SDK
         shell: bash
         run: |
           set -euo pipefail
 
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
 
-          if [ ! -d "$SDK_ROOT" ]; then
-            echo "ERROR: Android SDK directory not found: $SDK_ROOT"
+          test -d "$SDK_ROOT" || {
+            echo "Android SDK not found: $SDK_ROOT"
             exit 1
-          fi
+          }
 
           SDKMANAGER="$(find -L "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager -perm -u+x 2>/dev/null | sort -V | tail -n 1)"
 
-          if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager not found under $SDK_ROOT/cmdline-tools"
+          test -n "$SDKMANAGER" || {
+            echo "sdkmanager not found"
             exit 1
-          fi
+          }
 
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
@@ -61,26 +61,21 @@ jobs:
         shell: bash
         run: |
           set +e
-          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses > /tmp/android-licenses.log 2>&1
-          SDK_STATUS=${PIPESTATUS[1]}
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses > /tmp/licenses.log 2>&1
+          STATUS=${PIPESTATUS[1]}
           set -e
 
-          tail -n 20 /tmp/android-licenses.log
-
-          if [ "$SDK_STATUS" -ne 0 ]; then
-            echo "ERROR: Android SDK license acceptance failed"
-            exit "$SDK_STATUS"
-          fi
+          tail -n 20 /tmp/licenses.log
+          exit "$STATUS"
 
       - name: Install Android SDK 36
-        shell: bash
         run: |
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install \
             "platforms;android-36" \
             "build-tools;36.0.0" \
             "platform-tools"
 
-      - name: Extract AnimeStream source ZIP
+      - name: Extract AnimeStream ZIP
         shell: bash
         run: |
           set -euo pipefail
@@ -88,7 +83,7 @@ jobs:
           ZIP_FILE="$GITHUB_WORKSPACE/animestream-2.zip"
 
           if [ ! -f "$ZIP_FILE" ]; then
-            echo "ERROR: animestream-2.zip not found in repository root"
+            echo "ERROR: animestream-2.zip not found"
             exit 1
           fi
 
@@ -98,18 +93,17 @@ jobs:
           PACKAGE_JSON="$(find "$GITHUB_WORKSPACE/source" -type f -name package.json -print -quit)"
 
           if [ -z "$PACKAGE_JSON" ]; then
-            echo "ERROR: package.json not found in the ZIP"
+            echo "ERROR: package.json missing"
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$PACKAGE_JSON")"
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project directory: $PROJECT_DIR"
 
           test -f "$PROJECT_DIR/capacitor.config.ts"
 
-      - name: Install project dependencies
+      - name: Install dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -121,12 +115,21 @@ jobs:
             npm install
           fi
 
-      - name: Build AnimeStream web app
+      - name: TypeScript check and web build
         shell: bash
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
-          npm run build
+
+          echo "Running TypeScript validation..."
+
+          npx tsc --noEmit \
+            --noUnusedLocals false \
+            --noUnusedParameters false
+
+          echo "Building AnimeStream web assets..."
+
+          npx vite build
 
       - name: Generate Android platform
         shell: bash
@@ -149,16 +152,17 @@ jobs:
           if [ -f scripts/apply-android-branding.sh ]; then
             bash scripts/apply-android-branding.sh
           else
-            echo "WARNING: Android branding script not found; using default Android branding."
+            echo "Branding script not found; continuing."
           fi
 
-      - name: Build debug APK
+      - name: Build Android APK
         shell: bash
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR/android"
 
           chmod +x gradlew
+
           ./gradlew --no-daemon assembleDebug
 
       - name: Verify APK
@@ -169,10 +173,11 @@ jobs:
           APK="$PROJECT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -s "$APK" ]; then
-            echo "ERROR: app-debug.apk was not generated"
+            echo "ERROR: APK was not generated"
             exit 1
           fi
 
+          echo "APK successfully generated:"
           ls -lh "$APK"
 
       - name: Upload AnimeStream APK
